@@ -1,137 +1,925 @@
+'use strict';
+
 const CONFIG = window.ANDYCLOR_CONFIG || {};
-function aplicarConfiguracion(){
-  const wa=(CONFIG.whatsapp||'5491168306266').replace(/\D/g,'');
-  const waLink=(mensaje='')=>`https://wa.me/${wa}${mensaje?`?text=${encodeURIComponent(mensaje)}`:''}`;
-  const oferta=CONFIG.oferta||{};
-  if(oferta.producto) document.getElementById('ofertaProducto').textContent=oferta.producto;
-  if(oferta.texto) document.getElementById('ofertaTexto').textContent=oferta.texto;
-  if(oferta.precio){
-    const precioCompleto=String(oferta.precio);
-    const coincidencia=precioCompleto.match(/\$\s?[\d.]+(?:,[\d]{1,2})?/g);
-    const numero=coincidencia ? coincidencia[coincidencia.length-1].replace(/\s+/g,'') : precioCompleto;
-    const condicion=precioCompleto
-      .replace(numero,'')
-      .replace(/[,;:\-]\s*$/,'')
-      .replace(/\s{2,}/g,' ')
+
+const getWhatsAppNumber = () => String(CONFIG.contacto?.whatsapp || CONFIG.whatsapp || '5491168306266').replace(/\D/g, '');
+
+function detectTrafficSource() {
+  const params = new URLSearchParams(window.location.search);
+  const rawUtmSource = (params.get('utm_source') || '').replace(/[^a-zA-Z0-9áéíóúüñÁÉÍÓÚÜÑ _.-]/g, '').trim().slice(0, 40);
+  const referrer = document.referrer.toLowerCase();
+
+  let source = rawUtmSource;
+  if (!source && referrer.includes('chatgpt.com')) source = 'ChatGPT';
+  else if (!source && referrer.includes('perplexity.ai')) source = 'Perplexity';
+  else if (!source && (referrer.includes('copilot.microsoft.com') || referrer.includes('bing.com'))) source = 'Bing/Copilot';
+  else if (!source && referrer.includes('claude.ai')) source = 'Claude';
+  else if (!source && referrer.includes('gemini.google.com')) source = 'Gemini';
+  else if (!source && referrer.includes('meta.ai')) source = 'Meta AI';
+  else if (!source && referrer.includes('you.com')) source = 'You.com';
+  else if (!source && referrer.includes('search.brave.com')) source = 'Brave Search';
+  else if (!source && referrer.includes('google.')) source = 'Google';
+  else if (!source && referrer.includes('instagram.com')) source = 'Instagram';
+  else if (!source && referrer.includes('facebook.com')) source = 'Facebook';
+  else if (!source && referrer && !referrer.includes('andyclor.com.ar')) source = 'Otro sitio';
+
+  try {
+    if (source) sessionStorage.setItem('andyclor_visit_source', source);
+    return source || sessionStorage.getItem('andyclor_visit_source') || 'Directo';
+  } catch (_) {
+    return source || 'Directo';
+  }
+}
+
+function attributedMessage(message = '') {
+  const source = detectTrafficSource();
+  if (!message || source === 'Directo' || /Origen web:/i.test(message)) return message;
+  return `${message}\n\nOrigen web: ${source}.`;
+}
+
+function isMobileDevice() {
+  const userAgent = navigator.userAgent || '';
+  const isIPadDesktopMode = /Macintosh/i.test(userAgent) && Number(navigator.maxTouchPoints || 0) > 1;
+  return /Android|iPhone|iPad|iPod|IEMobile|Opera Mini|Mobile/i.test(userAgent) || isIPadDesktopMode;
+}
+
+function directWhatsAppLink(message = '') {
+  const phone = getWhatsAppNumber();
+  const text = message ? `&text=${encodeURIComponent(message)}` : '';
+
+  if (isMobileDevice()) {
+    return `https://wa.me/${phone}${message ? `?text=${encodeURIComponent(message)}` : ''}`;
+  }
+
+  return `https://web.whatsapp.com/send?phone=${phone}${text}`;
+}
+
+const whatsappLink = (message = '') => directWhatsAppLink(attributedMessage(message));
+
+let analyticsInitialized = false;
+
+function trackSiteEvent(eventName, parameters = {}) {
+  if (typeof window.gtag !== 'function') setupOptionalAnalytics();
+  if (typeof window.gtag !== 'function') return;
+
+  const measurementId = String(CONFIG.analytics?.ga4Id || '').trim();
+  window.gtag('event', eventName, {
+    page_path: window.location.pathname,
+    traffic_source: detectTrafficSource(),
+    transport_type: 'beacon',
+    ...(/^G-[A-Z0-9]+$/i.test(measurementId) ? { send_to: measurementId } : {}),
+    ...parameters
+  });
+}
+
+function setupOptionalAnalytics() {
+  if (analyticsInitialized) return;
+  const measurementId = String(CONFIG.analytics?.ga4Id || '').trim();
+  if (!/^G-[A-Z0-9]+$/i.test(measurementId)) return;
+  analyticsInitialized = true;
+
+  window.dataLayer = window.dataLayer || [];
+  window.gtag = function gtag() { window.dataLayer.push(arguments); };
+  window.gtag('js', new Date());
+  window.gtag('config', measurementId, { anonymize_ip: true });
+
+  const script = document.createElement('script');
+  script.async = true;
+  script.src = `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(measurementId)}`;
+  document.head.appendChild(script);
+}
+
+function decorateWhatsAppLink(link) {
+  if (!link) return;
+  const isWhatsApp = /https:\/\/(?:wa\.me\/|web\.whatsapp\.com\/send)/i.test(link.href);
+  if (!isWhatsApp && link.dataset.whatsappLink !== 'true') return;
+
+  try {
+    const url = new URL(link.href);
+    const source = detectTrafficSource();
+    const originalMessage = link.dataset.whatsappMessage ||
+      url.searchParams.get('text') ||
+      (source !== 'Directo'
+        ? CONFIG.mensajeGeneral || 'Hola ANDYCLOR. Quiero realizar una consulta.'
+        : '');
+
+    link.dataset.whatsappLink = 'true';
+    link.dataset.whatsappMessage = originalMessage;
+    link.href = directWhatsAppLink(attributedMessage(originalMessage));
+  } catch (_) {
+    // Conserva el enlace original si el navegador no puede interpretarlo.
+  }
+}
+
+const WHATSAPP_LINK_SELECTOR = [
+  'a[data-whatsapp-link="true"]',
+  'a[href*="wa.me/"]',
+  'a[href*="web.whatsapp.com/send"]'
+].join(', ');
+
+let whatsappTrackingInitialized = false;
+
+function findWhatsAppLink(target) {
+  if (!(target instanceof Element)) return null;
+  return target.closest(WHATSAPP_LINK_SELECTOR);
+}
+
+function handleWhatsAppClick(event) {
+  const link = findWhatsAppLink(event.target);
+  if (!link) return;
+
+  decorateWhatsAppLink(link);
+  trackSiteEvent('whatsapp_click', {
+    event_category: 'Contacto',
+    contact_method: 'WhatsApp',
+    link_label: (link.textContent || 'WhatsApp').trim().slice(0, 80),
+    link_url: link.href
+  });
+}
+
+function activateWhatsappTracking() {
+  if (whatsappTrackingInitialized) return;
+  whatsappTrackingInitialized = true;
+  document.addEventListener('click', handleWhatsAppClick, { capture: true });
+}
+
+function setupWhatsappTracking() {
+  document.querySelectorAll(WHATSAPP_LINK_SELECTOR).forEach(decorateWhatsAppLink);
+  activateWhatsappTracking();
+}
+
+// Se activa al evaluar el archivo, sin depender de otras funciones de inicio.
+// El modo captura registra el contacto antes de que WhatsApp abra otra pestaña.
+setupOptionalAnalytics();
+activateWhatsappTracking();
+
+function setupSeoBreadcrumbs() {
+  const main = document.querySelector('main');
+  const filename = window.location.pathname.split('/').filter(Boolean).pop() || 'index.html';
+  if (!main || filename === 'index.html' || main.querySelector('.seo-breadcrumb')) return;
+
+  const pageMap = {
+    'cloro-piletas.html': { label: 'Cloro para Piletas' },
+    'granulado-rapido.html': { label: 'Granulado Rápido (Dicloro)', parent: ['Cloro para Piletas', 'cloro-piletas.html'] },
+    'granulado-lento.html': { label: 'Granulado Lento (Tricloro)', parent: ['Cloro para Piletas', 'cloro-piletas.html'] },
+    'granulado-multiaccion.html': { label: 'Granulado Multiacción', parent: ['Cloro para Piletas', 'cloro-piletas.html'] },
+    'pastillas-multiaccion.html': { label: 'Pastillas Multiacción', parent: ['Cloro para Piletas', 'cloro-piletas.html'] },
+    'alguicida-clarificador.html': { label: 'Alguicida y Clarificador' },
+    'accesorios-piletas.html': { label: 'Accesorios para Piletas' },
+    'liquidos-papeles.html': { label: 'Líquidos y Papeles' },
+    'calculadora.html': { label: 'Calculadora para Piletas' },
+    'mayoristas.html': { label: 'Venta Mayorista' },
+    'academia.html': { label: 'Academia ANDYCLOR' },
+    'como-recuperar-agua-verde-pileta.html': { label: 'Cómo Recuperar el Agua Verde', parent: ['Academia ANDYCLOR', 'academia.html'] },
+    'como-mantener-agua-cristalina-pileta.html': { label: 'Cómo Mantener el Agua Cristalina', parent: ['Academia ANDYCLOR', 'academia.html'] },
+    'contacto.html': { label: 'Contacto' },
+    'cloro-para-piletas-adrogue.html': { label: 'Cloro para Piletas en Adrogué', parent: ['Cloro para Piletas', 'cloro-piletas.html'] }
+  };
+
+  const page = pageMap[filename] || {
+    label: document.querySelector('h1')?.textContent.trim() || document.title.split('|')[0].trim()
+  };
+  const items = [{ label: 'Inicio', href: 'index.html', absolute: 'https://andyclor.com.ar/' }];
+  if (page.parent) {
+    items.push({
+      label: page.parent[0],
+      href: page.parent[1],
+      absolute: `https://andyclor.com.ar/${page.parent[1]}`
+    });
+  }
+  const canonical = document.querySelector('link[rel="canonical"]')?.href || window.location.href.split('?')[0];
+  items.push({ label: page.label, absolute: canonical });
+
+  const nav = document.createElement('nav');
+  nav.className = 'seo-breadcrumb';
+  nav.setAttribute('aria-label', 'Ruta de navegación');
+  items.forEach((item, index) => {
+    if (index > 0) {
+      const separator = document.createElement('span');
+      separator.setAttribute('aria-hidden', 'true');
+      separator.textContent = '›';
+      nav.appendChild(separator);
+    }
+    if (item.href) {
+      const anchor = document.createElement('a');
+      anchor.href = item.href;
+      anchor.textContent = item.label;
+      nav.appendChild(anchor);
+    } else {
+      const current = document.createElement('span');
+      current.setAttribute('aria-current', 'page');
+      current.textContent = item.label;
+      nav.appendChild(current);
+    }
+  });
+  main.prepend(nav);
+
+  const structuredData = document.createElement('script');
+  structuredData.type = 'application/ld+json';
+  structuredData.dataset.generatedBreadcrumb = 'true';
+  structuredData.textContent = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: items.map((item, index) => ({
+      '@type': 'ListItem',
+      position: index + 1,
+      name: item.label,
+      item: item.absolute
+    }))
+  });
+  document.head.appendChild(structuredData);
+}
+
+function setText(id, value, prefix = '') {
+  const element = document.getElementById(id);
+  if (!element) return;
+  if (!value) {
+    element.hidden = true;
+    return;
+  }
+  element.textContent = prefix + value;
+}
+
+function configureSocial(id, url, pendingLabel = 'Próximamente') {
+  const element = document.getElementById(id);
+  if (!element) return;
+
+  if (url && /^https?:\/\//i.test(url)) {
+    element.href = url;
+    element.classList.remove('proximamente');
+    return;
+  }
+
+  element.href = '#';
+  element.removeAttribute('target');
+  element.classList.add('proximamente');
+  element.addEventListener('click', event => event.preventDefault());
+  const label = element.querySelector('small');
+  if (label) label.textContent = pendingLabel;
+}
+
+function applyConfiguration() {
+  const offer = CONFIG.oferta || {};
+
+  if (offer.producto) setText('ofertaProducto', offer.producto);
+  if (offer.texto) setText('ofertaTexto', offer.texto);
+
+  if (offer.precio) {
+    const fullPrice = String(offer.precio);
+    const matches = fullPrice.match(/\$\s?[\d.]+(?:,[\d]{1,2})?/g);
+    const number = matches ? matches[matches.length - 1].replace(/\s+/g, '') : fullPrice;
+    const condition = fullPrice
+      .replace(number, '')
+      .replace(/[,;:\-]\s*$/, '')
+      .replace(/\s{2,}/g, ' ')
       .trim();
-    document.getElementById('ofertaPrecio').textContent=numero;
-    const condicionEl=document.getElementById('ofertaCondicion');
-    if(condicionEl){
-      condicionEl.textContent=condicion || 'Oferta vigente';
-      condicionEl.hidden=!condicion;
+
+    setText('ofertaPrecio', number);
+    const conditionElement = document.getElementById('ofertaCondicion');
+    if (conditionElement) {
+      conditionElement.textContent = condition || 'Oferta vigente';
+      conditionElement.hidden = !condition;
     }
   }
 
-document.getElementById('ofertaWhatsApp').href=waLink(oferta.mensajeWhatsApp||`Hola ANDYCLOR. Quiero consultar la oferta de ${oferta.producto||'la página'}.`);
-  const vigencia=document.getElementById('ofertaVigencia');
-  if(oferta.vigencia){vigencia.textContent='Vigencia: '+oferta.vigencia;vigencia.hidden=false;}else vigencia.hidden=true;
-  document.getElementById('whatsappFlotante').href=waLink(CONFIG.mensajeGeneral||'Hola ANDYCLOR. Quiero consultar precios.');
-  document.getElementById('contactWhatsApp').href=waLink(CONFIG.mensajeGeneral||'Hola ANDYCLOR. Quiero consultar precios.');
-  document.getElementById('cotizacionWhatsApp').href=waLink(CONFIG.mensajeCotizacion||'Hola ANDYCLOR. Quisiera solicitar una cotización.');
-  const contacto=CONFIG.contacto||{};
-  const setInfo=(id,valor,prefijo='')=>{const el=document.getElementById(id);if(!valor){el.style.display='none';return;}el.textContent=prefijo+valor;};
-  setInfo('contactDireccion',contacto.direccion,'📍 '); setInfo('contactHorario',contacto.horarios,'🕒 ');
-  const email=document.getElementById('contactEmail'); if(contacto.email){email.textContent='✉️ '+contacto.email;email.href='mailto:'+contacto.email}else email.style.display='none';
-  const redes=CONFIG.redes||{};
-  configurarRed('socialInstagram',redes.instagram,'Próximamente');
-  configurarRed('socialFacebook',redes.facebook,'Próximamente');
-  configurarRed('socialMercadoLibre',redes.mercadoLibre,'Próximamente');
-  // Actualiza todos los botones de WhatsApp conservando el mensaje particular de cada uno.
-  document.querySelectorAll('a[href*="wa.me/"]').forEach(el=>{
-    try{const url=new URL(el.href);
+  const offerButton = document.getElementById('ofertaWhatsApp');
+  if (offerButton) {
+    offerButton.href = whatsappLink(
+      offer.mensajeWhatsApp ||
+      `Hola ANDYCLOR. Quiero consultar la oferta de ${offer.producto || 'la página'}.`
+    );
+  }
 
-const mensaje=url.searchParams.get('text')||'';el.href=waLink(mensaje);}catch(e){}
+  const validity = document.getElementById('ofertaVigencia');
+  if (validity) {
+    if (offer.vigencia) {
+      validity.textContent = `Vigencia: ${offer.vigencia}`;
+      validity.hidden = false;
+    } else {
+      validity.hidden = true;
+    }
+  }
+
+  const generalMessage = CONFIG.mensajeGeneral || 'Hola ANDYCLOR. Quiero consultar precios.';
+  const quoteMessage = CONFIG.mensajeCotizacion || 'Hola ANDYCLOR. Quisiera solicitar una cotización.';
+
+  ['whatsappFlotante', 'contactWhatsApp', 'quickWhatsApp', 'mobileWhatsApp'].forEach(id => {
+    const element = document.getElementById(id);
+    if (element) element.href = whatsappLink(generalMessage);
   });
-  renderPromociones(CONFIG.promociones||[],waLink);
-  const visibles=CONFIG.productosVisibles||{};
-  document.querySelectorAll('[data-producto]').forEach(card=>{const key=card.dataset.producto;if(visibles[key]===false)card.style.display='none';});
+
+  const quoteButton = document.getElementById('cotizacionWhatsApp');
+  if (quoteButton) quoteButton.href = whatsappLink(quoteMessage);
+
+  const contact = CONFIG.contacto || {};
+  setText('contactDireccion', contact.direccion, '📍 ');
+  setText('contactHorario', contact.horarios, '🕒 ');
+
+  const email = document.getElementById('contactEmail');
+  if (email) {
+    if (contact.email) {
+      email.hidden = false;
+      email.textContent = `✉️ ${contact.email}`;
+      email.href = `mailto:${contact.email}`;
+    } else {
+      email.hidden = true;
+    }
+  }
+
+  const social = CONFIG.redes || {};
+  configureSocial('socialInstagram', social.instagram);
+  configureSocial('socialFacebook', social.facebook);
+  configureSocial('socialMercadoLibre', social.mercadoLibre);
+
+  const visibleProducts = CONFIG.productosVisibles || {};
+  document.querySelectorAll('[data-producto]').forEach(card => {
+    if (visibleProducts[card.dataset.producto] === false) card.hidden = true;
+  });
+
+  renderPromotions(CONFIG.promociones || []);
 }
 
-function renderPromociones(promociones,waLink){
-  const cont=document.getElementById('promocionesFuturas');
-  if(!cont||!Array.isArray(promociones)||promociones.length===0){if(cont)cont.hidden=true;return;}
-  cont.innerHTML='<h3>Otras promociones</h3><div class="future-promotions-grid">'+promociones.map(p=>`<article><h4>${p.producto||'Promoción'}</h4><p>${p.texto||''}</p>${p.precio?`<strong>${p.precio}</strong>`:''}<a class="btn primary" target="_blank" rel="noopener" href="${waLink(p.mensajeWhatsApp||`Hola ANDYCLOR. Quiero consultar por ${p.producto||'esta promoción'}.`)}">Consultar</a></article>`).join('')+'</div>';
-  cont.hidden=false;
+function renderPromotions(promotions) {
+  const container = document.getElementById('promocionesFuturas');
+  if (!container) return;
+
+  if (!Array.isArray(promotions) || promotions.length === 0) {
+    container.hidden = true;
+    return;
+  }
+
+  container.innerHTML = `
+    <h3>Otras promociones</h3>
+    <div class="future-promotions-grid">
+      ${promotions.map(promotion => `
+        <article>
+          <h4>${promotion.producto || 'Promoción'}</h4>
+          <p>${promotion.texto || ''}</p>
+          ${promotion.precio ? `<strong>${promotion.precio}</strong>` : ''}
+          <a class="btn primary" target="_blank" rel="noopener noreferrer"
+             href="${whatsappLink(promotion.mensajeWhatsApp || `Hola ANDYCLOR. Quiero consultar por ${promotion.producto || 'esta promoción'}.`)}">
+             Consultar
+          </a>
+        </article>
+      `).join('')}
+    </div>
+  `;
+  container.hidden = false;
 }
 
-function configurarRed(id,enlace,textoPendiente){
-  const el=document.getElementById(id); if(!el)return;
-  if(enlace){el.href=enlace;el.classList.remove('proximamente');}
-  else{el.removeAttribute('target');el.href='#';el.classList.add('proximamente');el.addEventListener('click',e=>e.preventDefault());
+function setupNavigation() {
+  const navbar = document.getElementById('navbar');
+  const menu = document.getElementById('menuToggle');
+  const links = document.getElementById('navLinks');
 
-const small=el.querySelector('small');small.textContent=textoPendiente;}
+  window.addEventListener('scroll', () => {
+    if (navbar) navbar.classList.toggle('scrolled', window.scrollY > 40);
+  }, { passive: true });
+
+  if (menu && links) {
+    menu.addEventListener('click', () => {
+      const open = links.classList.toggle('open');
+      menu.setAttribute('aria-expanded', String(open));
+    });
+
+    links.querySelectorAll('a').forEach(link => {
+      link.addEventListener('click', () => {
+        links.classList.remove('open');
+        menu.setAttribute('aria-expanded', 'false');
+      });
+    });
+  }
 }
 
-document.addEventListener('DOMContentLoaded',aplicarConfiguracion);
-const nav=document.getElementById('navbar'), menu=document.getElementById('menuToggle'), links=document.getElementById('navLinks');
-window.addEventListener('scroll',()=>nav.classList.toggle('scrolled',window.scrollY>40));
-menu.addEventListener('click',()=>links.classList.toggle('open'));
-document.querySelectorAll('.nav-links a').forEach(a=>a.addEventListener('click',()=>links.classList.remove('open')));
-function sugerirPresentacionKg(kg){
-  if(kg<=1) return '1 kg';
-  if(kg<=5) return '5 kg';
-  if(kg<=10) return '10 kg';
-  return '50 kg o consultar cantidad mayorista';
+function setupMobileSections() {
+  document.querySelectorAll('.mobile-section-toggle').forEach(button => {
+    button.addEventListener('click', () => {
+      const section = button.closest('section');
+      if (!section) return;
+      const expanded = section.classList.toggle('mobile-section-expanded');
+      button.setAttribute('aria-expanded', String(expanded));
+      button.textContent = expanded ? 'Ver menos' : button.dataset.label || button.textContent;
+    });
+    button.dataset.label = button.textContent;
+  });
 }
 
-function sugerirPresentacionPastillas(pastillasPorMes){
-  // Para venta práctica, la calculadora sugiere compra aproximada para un mes.
-  // La compra mínima sugerida es 1 kg, equivalente a 5 pastillas de 200 g.
-  if(pastillasPorMes<=5) return '1 kg';
-  if(pastillasPorMes<=25) return '5 kg';
-  if(pastillasPorMes<=50) return '10 kg';
-  return 'cuñete de 50 kg o consultar cantidad mayorista';
+function suggestedGranulatedPresentation(monthlyKg) {
+  const requiredKg = Math.max(5, Math.ceil(monthlyKg));
+
+  // Oferta comercial sugerida: Mínimo 5 kg. Hasta 30 kg usamos las escalas
+  // 5 / 10 / 20 kg; desde 35 kg conviene el cuñete de 50 kg a granel.
+  if (requiredKg <= 5) return 'Oferta x 5 kg';
+  if (requiredKg <= 10) return 'Oferta x 10 kg';
+  if (requiredKg <= 20) return 'Oferta x 20 kg';
+  if (requiredKg <= 25) return 'Oferta x 20 kg + 5 kg';
+  if (requiredKg <= 30) return 'Oferta x 20 kg + 10 kg';
+  if (requiredKg <= 50) return 'Cuñete x 50 kg a granel — mejor precio';
+
+  const cuñetes = Math.ceil(requiredKg / 50);
+  return `${cuñetes} cuñetes x 50 kg a granel`;
 }
 
-function calcularPileta(){
- const largo=+document.getElementById('largo').value, ancho=+document.getElementById('ancho').value, profundidad=+document.getElementById('profundidad').value;
- const tipo=document.getElementById('tipoPileta').value, mant=document.getElementById('mantenimiento').value, temporada=document.getElementById('temporada').value, res=document.getElementById('resultadoCalculadora');
- if(!largo||!ancho||!profundidad||largo<=0||ancho<=0||profundidad<=0){res.innerHTML='<h3>Resultado</h3><p class="error">Completá largo, ancho y profundidad con valores válidos.</p>';return;}
- const litros=Math.round(largo*ancho*profundidad*1000);
- const tipoTxt=tipo==='revestida'?'Revestida / Venecitas':'Fibra o Pintada';
- const mantTxt={pastillas:'Solo Pastillas Multiacción',granulado:'Solo Cloro Granulado',granulado_multiaccion:'Granulado Rápido Multiacción',ambos:'Pastillas + Cloro Granulado'}[mant];
- const tempTxt=temporada==='alta'?'Temporada alta':'Temporada baja';
- const esMultiaccion=mant==='granulado_multiaccion';
- const cloroNombre=esMultiaccion?'Cloro Granulado Rápido Multiacción':(tipo==='revestida'?'Cloro Granulado Lento':'Cloro Granulado Rápido');
- const cloroGramos=Math.ceil((litros/40000)*80);
- const cloroFrecuencia=temporada==='alta'?'por día':'por semana';
- const cloroCompraKg=temporada==='alta' ? Math.ceil((cloroGramos*30/1000)*10)/10 : Math.ceil((cloroGramos*4/1000)*10)/10;
- const cloroPeriodo=temporada==='alta'?'aprox. un mes de temporada alta':'aprox. un mes de temporada baja';
- const pastillas=Math.max(1,Math.ceil(litros/20000));
- const pastillasFrecuencia=temporada==='alta'?'por semana':'por mes';
- const pastillasPorMes=temporada==='alta'?pastillas*4:pastillas;
- const compraPastillas=sugerirPresentacionPastillas(pastillasPorMes);
- // Dosificaciones Nataclor.
- // Alguicida: 400 cc cada 40.000 L semanal; 800 cc cada 40.000 L ante fuerte presencia de algas.
- // Clarificador: 250 cc cada 50.000 L.
- const algSem=Math.ceil((litros/40000)*400);
- const algChoque=Math.ceil((litros/40000)*800);
- const clarDosis=Math.ceil((litros/50000)*250);
- let items='', compra=[];
- if(mant==='granulado'||mant==='ambos'||mant==='granulado_multiaccion'){
-   const clase = esMultiaccion ? 'item-pastillas' : (tipo==='revestida'?'item-lento':'item-rapido');
-   items+=`<div class="result-item ${clase}"><strong>🧪 ${cloroNombre}</strong><span>${cloroGramos} g ${cloroFrecuencia}.</span><small>Regla Andyclor: 80 g cada 40.000 litros ${temporada==='alta'?'por día en temporada alta':'por semana en temporada baja'}. Compra sugerida: ${sugerirPresentacionKg(cloroCompraKg)} para ${cloroPeriodo}.</small></div>`;
-   compra.push(`${cloroNombre}: ${cloroGramos} g ${cloroFrecuencia}. Presentación sugerida: ${sugerirPresentacionKg(cloroCompraKg)}`);
- }
- if(mant==='pastillas'||mant==='ambos'){
-   items+=`<div class="result-item item-pastillas"><strong>🟣 Pastillas Multiacción</strong><span>${pastillas} pastilla(s) de 200 g ${pastillasFrecuencia}.</span><small>Compra sugerida para 1 mes aprox.: ${compraPastillas}.</small><small>Regla Andyclor: 1 pastilla cada 20.000 litros ${temporada==='alta'?'una vez por semana en temporada alta':'por mes en temporada baja'}. 1 kg equivale a 5 pastillas.</small></div>`;
-   compra.push(`Pastillas Multiacción: ${pastillas} pastilla(s) ${pastillasFrecuencia}. Compra sugerida para 1 mes aprox.: ${compraPastillas}`);
- }
- if(mant==='pastillas'){
-   if(tipo==='fibra_pintada'){
-     items+=`<div class="result-item note"><strong>💡 Recuperación</strong><span>Para clientes que mantienen con pastillas, conviene tener Cloro Granulado Rápido solo para shock o recuperación cuando el agua lo requiera.</span></div>`;
-     compra.push('Opcional recuperación: Cloro Granulado Rápido');
-   } else {
-     items+=`<div class="result-item note"><strong>💡 Recuperación</strong><span>Para tratamientos puntuales, consultar dosis según el estado del agua.</span></div>`;
-   }
- }
- if(esMultiaccion){
-   items+=`<div class="result-item note"><strong>🟣 Multiacción</strong><span>Apto para cualquier tipo de pileta. Ajustá los complementos según el estado real del agua y las indicaciones de la etiqueta.</span></div>`;
- }
- items+=`<div class="result-item item-alguicida"><strong>🟦 Alguicida Nataclor</strong><span>Mantenimiento: ${algSem} cc por semana.</span><small>Ante fuerte presencia de algas: ${algChoque} cc. Aplicar sin bañistas y recircular durante 3 horas.</small></div><div class="result-item item-clarificador"><strong>💧 Clarificador Nataclor</strong><span>${clarDosis} cc por aplicación.</span><small>Diluir en un balde con 10 litros de agua, aplicar por la noche y pasar el limpiafondo por la mañana.</small></div>`;
- compra.push('Alguicida: 1 litro','Clarificador: 1 litro');
- const tema = mant==='pastillas' ? 'tema-pastillas' : (mant==='granulado' ? (tipo==='revestida' ? 'tema-lento' : 'tema-rapido') : (mant==='granulado_multiaccion' ? 'tema-pastillas' : 'tema-mixto'));
- res.className = 'calc-result ' + tema;
- const msg=encodeURIComponent(`Hola Andyclor. Quiero solicitar presupuesto de este tratamiento.\nPileta: ${tipoTxt}\nMedidas: ${largo} m x ${ancho} m x ${profundidad} m\nLitros aprox.: ${litros.toLocaleString('es-AR')}\nMantenimiento: ${mantTxt}\nTemporada: ${tempTxt}\nProductos sugeridos:\n- ${compra.join('\n- ')}\nGracias.`);
- res.innerHTML=`<h3>Resultado para tu pileta</h3><div class="litros-box"><strong>${litros.toLocaleString('es-AR')} litros aprox.</strong><span>${tipoTxt}</span><span>${mantTxt}</span><span>${tempTxt}</span></div><div class="result-grid">${items}</div><div class="recommend"><strong>Recomendaciones:</strong><p>Mantener pH entre 7,2 y 7,6. Filtrar entre 6 y 8 horas diarias en temporada. Las dosis son orientativas y pueden variar por clima, uso, lluvia y estado del agua.</p></div><a class="btn primary" target="_blank" href="https://wa.me/${(CONFIG.whatsapp||'5491168306266').replace(/\D/g,'')}?text=${msg}">Solicitar presupuesto de este tratamiento</a>`;
+function formatKg(value) {
+  return Number.isInteger(value)
+    ? `${value} kg`
+    : `${value.toFixed(1).replace('.', ',')} kg`;
 }
+
+function tabletMonthlyEstimate(tabletsPerMonth) {
+  const capsules = Math.max(1, Math.ceil(tabletsPerMonth));
+  const kg = capsules * 0.2;
+  return {
+    capsules,
+    kg,
+    label: `${capsules} cápsula(s) de 200 g (${formatKg(kg)})`
+  };
+}
+
+function suggestedTabletOffer(monthlyKg) {
+  const requiredKg = Math.max(5, Math.ceil(monthlyKg));
+
+  // Las pastillas vienen en cápsulas y pueden fraccionarse, pero la calculadora
+  // deriva hacia las ofertas comerciales para favorecer una compra conveniente.
+  if (requiredKg <= 5) return 'Oferta x 5 kg';
+  if (requiredKg <= 10) return 'Oferta x 10 kg';
+  if (requiredKg <= 20) return 'Oferta x 20 kg';
+  if (requiredKg <= 25) return 'Oferta x 20 kg + 5 kg';
+  if (requiredKg <= 30) return 'Oferta x 20 kg + 10 kg';
+  if (requiredKg <= 40) return '2 ofertas x 20 kg';
+  return 'Cotización por volumen';
+}
+
+function suggestedLiquidChlorinePresentation(monthlyLitres) {
+  const bidones = Math.max(1, Math.ceil(monthlyLitres / 5));
+  const totalLitres = bidones * 5;
+  return `${bidones} bidón${bidones === 1 ? '' : 'es'} x 5 L (${totalLitres} L)`;
+}
+
+function formatLitres(value) {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded)
+    ? `${rounded} L`
+    : `${rounded.toFixed(1).replace('.', ',')} L`;
+}
+
+function calculatePool() {
+  const length = Number(document.getElementById('largo')?.value);
+  const width = Number(document.getElementById('ancho')?.value);
+  const depth = Number(document.getElementById('profundidad')?.value);
+  const poolType = document.getElementById('tipoPileta')?.value;
+  const recovery = document.getElementById('recuperacion')?.value;
+  const maintenance = document.getElementById('mantenimiento')?.value;
+  const season = document.getElementById('temporada')?.value;
+  const result = document.getElementById('resultadoCalculadora');
+  const entryPanel = document.querySelector('.calc-entry-panel');
+  const formPanel = document.querySelector('.calc-entry-panel .calc-form');
+  const resetButton = document.getElementById('recalcularPiletaBtn');
+
+  if (!result) return;
+
+  if (![length, width, depth].every(value => Number.isFinite(value) && value > 0)) {
+    result.innerHTML = '<h3>Resultado</h3><p class="error">Completá largo, ancho y profundidad con valores válidos.</p>';
+    result.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
+
+  const litres = Math.round(length * width * depth * 1000);
+  const poolTypeLabel = poolType === 'revestida' ? 'Revestida / Venecitas' : 'Fibra o Pintada';
+  const maintenanceLabels = {
+    pastillas: 'Solo Pastillas Multiacción',
+    granulado: 'Solo Cloro Granulado',
+    granulado_multiaccion: 'Granulado Rápido Multiacción',
+    liquido: 'Cloro Líquido 110 g/L',
+    ambos: 'Pastillas + Cloro Granulado'
+  };
+  const maintenanceLabel = maintenanceLabels[maintenance] || maintenance;
+  const recoveryLabel = recovery === 'oxypool'
+    ? 'Recuperación rápida con Oxypool'
+    : 'Solo mantenimiento';
+  const seasonLabel = season === 'alta' ? 'Temporada alta' : 'Temporada baja';
+
+  const multiAction = maintenance === 'granulado_multiaccion';
+  const addOxypool = recovery === 'oxypool';
+  const granulatedName = multiAction
+    ? 'Cloro Granulado Rápido Multiacción'
+    : (poolType === 'revestida' ? 'Cloro Granulado Lento' : 'Cloro Granulado Rápido');
+
+  const granulatedGrams = Math.ceil((litres / 40000) * 80);
+  const granulatedFrequency = season === 'alta' ? 'por día' : 'por semana';
+  const granulatedMonthlyKg = season === 'alta'
+    ? Math.ceil((granulatedGrams * 30 / 1000) * 10) / 10
+    : Math.ceil((granulatedGrams * 4 / 1000) * 10) / 10;
+
+  // Cloro líquido de alta concentración: 110 g/L de cloro activo.
+  // La dosis es por aplicación: cada 24 h en temporada alta y cada 7 días en temporada baja.
+  const liquidMl = Math.ceil((litres / 40000) * 400);
+  const liquidFrequency = season === 'alta' ? 'cada 24 horas' : 'cada 7 días';
+  const liquidMonthlyLitres = season === 'alta'
+    ? Math.ceil((liquidMl * 30 / 1000) * 10) / 10
+    : Math.ceil((liquidMl * 4 / 1000) * 10) / 10;
+
+  const oxypoolBaseGrams = Math.ceil((litres / 10000) * 20);
+  const oxypoolReinforcedGrams = Math.ceil((litres / 10000) * 40);
+  const oxypoolPresentation = oxypoolReinforcedGrams <= 1000
+    ? 'Envase original x 1 kg'
+    : 'Lata original x 10 kg';
+
+  const tablets = Math.max(1, Math.ceil(litres / 20000));
+  const tabletsFrequency = season === 'alta' ? 'por semana' : 'por mes';
+  const tabletsPerMonth = season === 'alta' ? tablets * 4 : tablets;
+
+  const weeklyAlgaecide = Math.ceil((litres / 40000) * 400);
+  const strongAlgaeAlgaecide = Math.ceil((litres / 40000) * 800);
+  const clarifierDose = Math.ceil((litres / 50000) * 250);
+
+  const resultItems = [];
+  const preparedOrder = [];
+  const messageOrder = [];
+
+  if (addOxypool) {
+    resultItems.push(`
+      <div class="treatment-section-title treatment-recovery-title">
+        <span>1</span>
+        <div><strong>Primero: recupero del agua</strong><small>Tratamiento puntual, no de mantenimiento.</small></div>
+      </div>
+      <div class="result-item item-oxypool result-item-featured">
+        <strong>⚡ Oxypool Nataclor</strong>
+        <span><b>Dosis orientativa de recupero:</b> ${oxypoolBaseGrams} g</span>
+        <small><b>Aplicación reforzada máxima:</b> ${oxypoolReinforcedGrams} g. No superar el doble de la dosis base.</small>
+        <small><b>Presentación original sugerida:</b> ${oxypoolPresentation}.</small>
+        <small>Cloro ultrarrápido + oxígeno activo. Ajustar pH, filtrar y volver a medir antes de repetir. El resultado depende del estado inicial, el clima y la carga de suciedad.</small>
+      </div>
+    `);
+    preparedOrder.push(`<li class="prepared-product prepared-oxypool"><strong>Oxypool Nataclor</strong><span>${oxypoolPresentation}</span></li>`);
+    messageOrder.push(`Oxypool Nataclor — recupero base: ${oxypoolBaseGrams} g; reforzada máxima: ${oxypoolReinforcedGrams} g; presentación sugerida: ${oxypoolPresentation}`);
+  }
+
+  resultItems.push(`
+    <div class="treatment-section-title treatment-maintenance-title">
+      <span>${addOxypool ? '2' : '1'}</span>
+      <div><strong>${addOxypool ? 'Después: mantenimiento sugerido' : 'Mantenimiento sugerido'}</strong><small>Tipo de cloro, dosis y frecuencia orientativa.</small></div>
+    </div>
+  `);
+
+  if (['granulado', 'ambos', 'granulado_multiaccion'].includes(maintenance)) {
+    const offer = suggestedGranulatedPresentation(granulatedMonthlyKg);
+    const preparedGranulatedClass = multiAction
+      ? 'prepared-multiaccion'
+      : (poolType === 'revestida' ? 'prepared-lento' : 'prepared-rapido');
+    resultItems.push(`
+      <div class="result-item ${multiAction ? 'item-pastillas' : (poolType === 'revestida' ? 'item-lento' : 'item-rapido')}">
+        <strong>🧪 ${granulatedName}</strong>
+        <span><b>Dosis estimada:</b> ${granulatedGrams} g ${granulatedFrequency}</span>
+        <small><b>Consumo estimado para aproximadamente un mes:</b> ${formatKg(granulatedMonthlyKg)}.</small>
+        <small><b>Oferta recomendada:</b> ${offer}. Mejor precio por cantidad.</small>
+      </div>
+    `);
+    preparedOrder.push(`<li class="prepared-product ${preparedGranulatedClass}"><strong>${granulatedName}</strong><span>${offer}</span></li>`);
+    messageOrder.push(`${offer} — dosis estimada: ${granulatedGrams} g ${granulatedFrequency}; consumo mensual aprox.: ${formatKg(granulatedMonthlyKg)}`);
+  }
+
+  if (maintenance === 'liquido') {
+    const offer = suggestedLiquidChlorinePresentation(liquidMonthlyLitres);
+    resultItems.push(`
+      <div class="result-item item-liquido">
+        <strong>💧 Cloro Líquido de Alta Concentración – 110 g/L</strong>
+        <span><b>Dosis de mantenimiento:</b> ${liquidMl} ml ${liquidFrequency}</span>
+        <small>La dosis indicada corresponde a <b>una aplicación</b>. En temporada alta representa 24 horas de mantenimiento; en temporada baja, 7 días.</small>
+        <small><b>Consumo estimado para aproximadamente un mes:</b> ${formatLitres(liquidMonthlyLitres)}.</small>
+        <small><b>Compra sugerida:</b> ${offer}. ANDYCLOR trabaja con 110 g/L de cloro activo, una concentración superior a muchas presentaciones habituales del mercado.</small>
+      </div>
+    `);
+    preparedOrder.push(`<li class="prepared-product prepared-liquido"><strong>Cloro Líquido 110 g/L</strong><span>${offer}</span></li>`);
+    messageOrder.push(`Cloro Líquido 110 g/L — dosis: ${liquidMl} ml ${liquidFrequency}; consumo mensual aprox.: ${formatLitres(liquidMonthlyLitres)}; compra sugerida: ${offer}`);
+  }
+
+  if (['pastillas', 'ambos'].includes(maintenance)) {
+    const estimate = tabletMonthlyEstimate(tabletsPerMonth);
+    const offer = suggestedTabletOffer(estimate.kg);
+    resultItems.push(`
+      <div class="result-item item-pastillas">
+        <strong>🟣 Pastillas Multiacción en cápsulas</strong>
+        <span><b>Dosis estimada:</b> ${tablets} pastilla(s) de 200 g ${tabletsFrequency}</span>
+        <small><b>Consumo estimado para aproximadamente un mes:</b> ${estimate.label}.</small>
+        <small><b>Oferta recomendada:</b> ${offer}. Mejor precio por cantidad.</small>
+      </div>
+    `);
+    preparedOrder.push(`<li class="prepared-product prepared-pastillas"><strong>Pastillas Multiacción en cápsulas</strong><span>${offer}</span></li>`);
+    messageOrder.push(`${offer} — uso estimado: ${tablets} pastilla(s) ${tabletsFrequency}; consumo mensual aprox.: ${estimate.label}`);
+  }
+
+  resultItems.push(`
+    <div class="result-item item-alguicida">
+      <strong>🟦 Alguicida Nataclor</strong>
+      <span>${weeklyAlgaecide} cc por semana</span>
+      <small>Ante fuerte presencia de algas: ${strongAlgaeAlgaecide} cc. Aplicar sin bañistas y recircular durante 3 horas.</small>
+    </div>
+  `);
+  preparedOrder.push(`<li class="prepared-product prepared-alguicida"><strong>Alguicida Nataclor</strong><span>x 1 litro</span></li>`);
+  messageOrder.push(`Alguicida Nataclor x 1 litro — dosis: ${weeklyAlgaecide} cc semanales`);
+
+  resultItems.push(`
+    <div class="result-item item-clarificador">
+      <strong>💧 Clarificador Nataclor</strong>
+      <span>${clarifierDose} cc por aplicación</span>
+      <small>Diluir en 10 litros de agua, aplicar por la noche y pasar el limpiafondo por la mañana.</small>
+    </div>
+  `);
+  preparedOrder.push(`<li class="prepared-product prepared-clarificador"><strong>Clarificador Nataclor</strong><span>x 1 litro</span></li>`);
+  messageOrder.push(`Clarificador Nataclor x 1 litro — dosis: ${clarifierDose} cc por aplicación`);
+
+  const message = [
+    'Hola ANDYCLOR. Utilicé la calculadora de la página.',
+    '',
+    `Pileta: ${poolTypeLabel}`,
+    `Medidas: ${length} m x ${width} m x ${depth} m`,
+    `Capacidad aproximada: ${litres.toLocaleString('es-AR')} litros`,
+    `Recuperación: ${recoveryLabel}`,
+    `Mantenimiento: ${maintenanceLabel}`,
+    `Temporada: ${seasonLabel}`,
+    '',
+    'Quisiera cotización para:',
+    ...messageOrder.map(item => `• ${item}`),
+    '',
+    'La página me mostró la dosis estimada y una oferta recomendada. Quisiera consultar disponibilidad y precio.'
+  ].join('\n');
+
+  const theme = addOxypool
+    ? 'tema-oxypool'
+    : (maintenance === 'pastillas'
+    ? 'tema-pastillas'
+    : (maintenance === 'granulado'
+      ? (poolType === 'revestida' ? 'tema-lento' : 'tema-rapido')
+      : (maintenance === 'granulado_multiaccion' ? 'tema-pastillas' : (maintenance === 'liquido' ? 'tema-liquido' : 'tema-mixto'))));
+
+  result.className = `calc-result ${theme}`;
+  result.innerHTML = `
+    <div class="calc-final-layout">
+      <section class="calc-order-column" aria-label="Resultado y oferta recomendada">
+        <span class="calc-result-kicker">✓ Resultado del cálculo</span>
+        <h3>Oferta recomendada para tu pileta</h3>
+
+        <a class="btn primary calculator-whatsapp-cta calculator-whatsapp-top" target="_blank" rel="noopener noreferrer"
+           href="${whatsappLink(message)}">
+           🟢 Finalizar pedido por WhatsApp
+        </a>
+        <small class="calculator-whatsapp-help">WhatsApp recibirá los productos, la dosis estimada y la oferta recomendada.</small>
+
+        <section class="prepared-order prepared-order-compact" aria-label="Pedido preparado">
+          <span class="prepared-order-kicker">🛒 Compra recomendada</span>
+          <ul>${preparedOrder.join('')}</ul>
+        </section>
+
+        <details class="pool-summary">
+          <summary>Ver datos utilizados para el cálculo</summary>
+          <div class="litros-box">
+            <strong>${litres.toLocaleString('es-AR')} litros aprox.</strong>
+            <span>${poolTypeLabel}</span>
+            <span>${recoveryLabel}</span>
+            <span>${maintenanceLabel}</span>
+            <span>${seasonLabel}</span>
+            <span>${length} m × ${width} m × ${depth} m</span>
+          </div>
+        </details>
+      </section>
+
+      <section class="calc-treatment-column" aria-label="Recupero y mantenimiento recomendado">
+        <h3>${addOxypool ? 'Recupero y mantenimiento recomendado' : 'Mantenimiento recomendado'}</h3>
+        <div class="result-grid">${resultItems.join('')}</div>
+
+        <div class="recommend">
+          <strong>Importante:</strong>
+          <p>Las dosis son orientativas. El calor intenso, muchos bañistas, protectores solares y cremas, hojas y pinochas, lluvia, tierra, otros residuos, el filtrado y el estado del agua pueden modificar la necesidad real. Mantener el pH entre 7,2 y 7,6, aplicar cada químico por separado y volver a medir antes de habilitar el baño.</p>
+        </div>
+      </section>
+    </div>
+  `;
+
+  const volumeBand = litres <= 20000
+    ? 'hasta_20000'
+    : (litres <= 40000 ? '20001_a_40000' : (litres <= 70000 ? '40001_a_70000' : 'mas_de_70000'));
+  trackSiteEvent('calculator_complete', {
+    pool_type: poolType,
+    recovery_type: recovery,
+    maintenance_type: maintenance,
+    season,
+    volume_band: volumeBand
+  });
+
+  if (formPanel) {
+    formPanel.classList.add('is-hidden-after-calc');
+    formPanel.setAttribute('aria-hidden', 'true');
+  }
+  if (entryPanel) {
+    entryPanel.classList.add('showing-result');
+  }
+  if (resetButton) {
+    resetButton.hidden = false;
+  }
+  result.classList.add('is-visible-after-calc');
+
+  setTimeout(() => {
+    const target = result.querySelector('.calc-order-column') || result;
+    const headerOffset = 86;
+    const rect = target.getBoundingClientRect();
+    const targetTop = window.scrollY + rect.top - headerOffset;
+
+    window.scrollTo({
+      top: Math.max(0, targetTop),
+      behavior: 'smooth'
+    });
+
+    // Segundo ajuste breve por si el navegador todavía estaba reacomodando
+    setTimeout(() => {
+      const updatedRect = target.getBoundingClientRect();
+      const correctedTop = window.scrollY + updatedRect.top - headerOffset;
+      window.scrollTo({
+        top: Math.max(0, correctedTop),
+        behavior: 'auto'
+      });
+    }, 280);
+  }, 180);
+}
+
+function resetPoolCalculator() {
+  const entryPanel = document.querySelector('.calc-entry-panel');
+  const formPanel = document.querySelector('.calc-entry-panel .calc-form');
+  const result = document.getElementById('resultadoCalculadora');
+  const resetButton = document.getElementById('recalcularPiletaBtn');
+
+  if (formPanel) {
+    formPanel.classList.remove('is-hidden-after-calc');
+    formPanel.removeAttribute('aria-hidden');
+  }
+  if (entryPanel) {
+    entryPanel.classList.remove('showing-result');
+    entryPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  if (result) {
+    result.className = 'calc-result';
+    result.innerHTML = '<h3>Resultado</h3><p>Completá los datos para ver el tratamiento recomendado.</p>';
+  }
+
+  if (resetButton) {
+    resetButton.hidden = true;
+  }
+}
+
+function setupCalculator() {
+  const button = document.getElementById('calcularPiletaBtn');
+  const resetButton = document.getElementById('recalcularPiletaBtn');
+
+  if (button) button.addEventListener('click', calculatePool);
+  if (resetButton) resetButton.addEventListener('click', resetPoolCalculator);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  setupOptionalAnalytics();
+  setupSeoBreadcrumbs();
+  applyConfiguration();
+  setupNavigation();
+  setupMobileSections();
+  setupCalculator();
+  setupWhatsappTracking();
+});
+
+
+// HOTFIX MENÚ MÓVIL
+document.addEventListener('DOMContentLoaded', () => {
+  const navbar = document.getElementById('navbar');
+  const menu = document.getElementById('menuToggle');
+  const links = document.getElementById('navLinks');
+
+  if (!menu || !links) return;
+
+  const closeMenu = () => {
+    links.classList.remove('open');
+    menu.setAttribute('aria-expanded', 'false');
+  };
+
+  document.addEventListener('click', (event) => {
+    if (!links.classList.contains('open')) return;
+    if (navbar && !navbar.contains(event.target)) closeMenu();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeMenu();
+  });
+
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 900) closeMenu();
+  }, { passive: true });
+});
+
+
+// ==========================================================
+// OFERTAS DINÁMICAS MASTER
+// Precio > 0 = visible. Precio 0 = oculto.
+// 1 oferta: Centrada | 2: Lado a lado | 3: Misma fila en desktop.
+// ==========================================================
+function numericPrice(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value !== 'string') return 0;
+  const cleaned = value.replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.');
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatARS(value) {
+  const amount = numericPrice(value);
+  if (amount <= 0) return '';
+  return `$${Math.round(amount).toLocaleString('es-AR')}`;
+}
+
+function offerTypeClass(type) {
+  const allowed = ['rapido', 'lento', 'pastillas', 'multiaccion'];
+  return allowed.includes(type) ? `offer-product-${type}` : 'offer-product-default';
+}
+
+function buildOfferCard(offer, segment) {
+  const card = document.createElement('article');
+  card.className = `gold-offer-card ${segment} ${offerTypeClass(offer.tipo)}${offer.superOferta ? ' is-super-offer' : ''}`;
+
+  const badge = segment === 'retail' ? 'Oferta Minorista' : 'Oferta Mayorista';
+  const buttonLabel = segment === 'retail' ? 'Consultar oferta' : 'Solicitar cotización';
+  const priceKg = numericPrice(offer.precioKg);
+  const normalPrice = numericPrice(offer.precioNormal);
+  const priceLabel = offer.etiquetaPrecio || 'Precio publicado';
+  const conditions = Array.isArray(offer.condiciones) && offer.condiciones.length
+    ? offer.condiciones
+    : (segment === 'retail'
+      ? [
+          'Precio especial por cantidad',
+          'Entrega coordinada según zona',
+          'Pago por efectivo o transferencia'
+        ]
+      : [
+          'Referencia sujeta a volumen, frecuencia, distancia y producto',
+          'Otros volúmenes y compras recurrentes se evalúan caso por caso',
+          'Entrega propia, retiro coordinado o despacho por transporte'
+        ]);
+  const message = offer.mensajeWhatsapp ||
+    (segment === 'retail'
+      ? `Hola ANDYCLOR. Quiero consultar la oferta de ${offer.producto || 'este producto'}.`
+      : `Hola ANDYCLOR. Quiero solicitar una cotización Mayorista de ${offer.producto || 'este producto'}. Cantidad estimada: ____ kg. Frecuencia: ____. Zona: ____.`);
+
+  card.innerHTML = `
+    ${offer.superOferta ? '<div class="gold-super-offer">SUPER OFERTA</div>' : ''}
+    <div class="gold-offer-badge">${badge}</div>
+    <h3>${offer.producto || 'Oferta ANDYCLOR'}</h3>
+    ${offer.tecnico ? `<p class="gold-offer-technical">${offer.tecnico}</p>` : ''}
+    ${offer.detalle ? `<p class="gold-offer-volume">${offer.detalle}</p>` : ''}
+    <div class="gold-offer-price-wrap">
+      <small>${priceLabel}</small>
+      ${normalPrice > numericPrice(offer.precio) ? `<span class="gold-normal-price">Precio actual: <del>${formatARS(normalPrice)}</del></span>` : ''}
+      <strong>${formatARS(offer.precio)}</strong>
+      ${priceKg > 0 ? `<span>${formatARS(priceKg)} por kg</span>` : ''}
+      ${offer.vigencia ? `<span class="gold-saving-badge">${offer.vigencia}</span>` : ''}
+      ${offer.ahorro ? `<span class="gold-saving-badge">${offer.ahorro}</span>` : ''}
+    </div>
+    <ul>
+      ${conditions.map(condition => `<li>${condition}</li>`).join('')}
+    </ul>
+    <a class="btn primary gold-offer-action" target="_blank" rel="noopener noreferrer"
+       data-whatsapp-link="true" href="${whatsappLink(message)}">${buttonLabel}</a>
+  `;
+  return card;
+}
+
+function renderOfferGroup(containerId, offers, segment) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const active = (Array.isArray(offers) ? offers : [])
+    .filter(offer => offer && numericPrice(offer.precio) > 0)
+    .slice(0, 4);
+
+  const section = container.closest('.gold-offer-section');
+  if (active.length === 0) {
+    if (section) section.hidden = true;
+    container.innerHTML = '';
+    return;
+  }
+
+  if (section) section.hidden = false;
+  container.classList.remove('count-1', 'count-2', 'count-3', 'count-4');
+  container.classList.add(`count-${active.length}`);
+  container.innerHTML = '';
+  active.forEach(offer => container.appendChild(buildOfferCard(offer, segment)));
+}
+
+function renderMasterOffers() {
+  const offers = CONFIG.ofertas || {};
+  renderOfferGroup('ofertasMinoristasGrid', offers.minorista, 'retail');
+  renderOfferGroup('ofertasMayoristasGrid', offers.mayorista, 'wholesale');
+
+  const hasActiveOffer = list => (Array.isArray(list) ? list : []).some(offer => offer && numericPrice(offer.precio) > 0);
+  const retailAccess = document.getElementById('accesoOfertaMinorista');
+  const wholesaleAccess = document.getElementById('accesoOfertaMayorista');
+  if (retailAccess) retailAccess.hidden = !hasActiveOffer(offers.minorista);
+  if (wholesaleAccess) wholesaleAccess.hidden = !hasActiveOffer(offers.mayorista);
+}
+
+document.addEventListener('DOMContentLoaded', renderMasterOffers);
